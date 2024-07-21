@@ -1,0 +1,1078 @@
+using System;
+using System.IO;
+using UnityEngine;
+using System.Collections.Generic;
+using UnityEngine.UI;
+using System.Linq;
+using System.Collections;
+
+public class ParserMse : MonoBehaviour
+{
+    #region UI
+    public Dropdown dd_mseItem;
+    public Button btn_replay, btn_quit, btn_next, btn_before, btn_pause, btn_autoplay, btn_stop;
+    public Toggle tg_showChar, tg_bSphere, tg_cursor;
+    public RawImage ri_black;
+    public Slider sli_simSpeed;
+    public Text tt_simSpeed, tt_current;
+    public InputField if_current;
+    #endregion
+
+    #region 3D
+    public ParticleSystem particlePrefab;
+    public GameObject go_char, go_bSphere, go_loading_icon;
+    public GameObject[] go_cursors = new GameObject[3];
+    public Animator anim_warning;
+    #endregion
+
+    int totalIndex = 0, pauseCnt = 0;
+
+    void Start()
+    {
+        Init_UI();
+    }
+
+    void Init_UI()
+    {
+        dd_mseItem.AddOptions(GetAllMses($"config/mses"));
+        dd_mseItem.onValueChanged.AddListener(OnDropDown);
+        btn_replay.onClick.AddListener(RePlay);
+        btn_quit.onClick.AddListener(Quit);
+        btn_next.onClick.AddListener(Next);
+        btn_before.onClick.AddListener(Before);
+        btn_pause.onClick.AddListener(Pause);
+        btn_autoplay.onClick.AddListener(AutoPlay);
+        btn_stop.onClick.AddListener(Stop);
+        tg_showChar.onValueChanged.AddListener(ShowChar);
+        tg_bSphere.onValueChanged.AddListener(ShowBsphere);
+        tg_cursor.onValueChanged.AddListener(ShowCursor);
+        sli_simSpeed.onValueChanged.AddListener(ChangeSimSpeed);
+        if_current.onEndEdit.AddListener(OnEndEdit);
+    }
+    #region for UI
+    List<string> GetAllMses(string directory_url)
+    {
+        List<string> all_mses = new List<string>();
+        if (Directory.Exists(directory_url))
+        {
+            string[] urls = Directory.GetFiles(directory_url);
+            foreach (string url in urls)
+            {
+                all_mses.Add(url.Replace(".mse", string.Empty));
+            }
+            tt_current.text = "/" + urls.Length;
+        }
+        return all_mses;
+    }
+    void OnEndEdit(string str)
+    {
+        if (string.IsNullOrEmpty(str)) return;
+        int index = int.Parse(str);
+        dd_mseItem.value = index;
+    }
+    void ChangeSimSpeed(float val)
+    {
+        Time.timeScale = val / 2f;
+        tt_simSpeed.text = Time.timeScale.ToString("f1") + " x";
+    }
+    void Pause()
+    {
+        pauseCnt++;
+        if (pauseCnt % 2 == 1)
+        {
+            Color col;
+            if (ColorUtility.TryParseHtmlString("#FF7F00", out col))
+                btn_pause.GetComponent<Image>().color = col;
+            btn_pause.GetComponentInChildren<Text>().text = "Play";
+            btn_replay.enabled = false;
+            Time.timeScale = 0f;
+        }
+        else
+        {
+            Color col;
+            if (ColorUtility.TryParseHtmlString("#008cff", out col))
+                btn_pause.GetComponent<Image>().color = col;
+            btn_pause.GetComponentInChildren<Text>().text = "Pause";
+            btn_replay.enabled = true;
+            Time.timeScale = sli_simSpeed.value / 2f;
+        }
+    }
+    void AutoPlay()
+    {
+        go_loading_icon.SetActive(true);
+        StartCoroutine(PsAutoPlay());
+    }
+    IEnumerator PsAutoPlay()
+    {
+        yield return new WaitForSeconds(1f);
+        Next();
+        StartCoroutine(PsAutoPlay());
+    }
+    void Stop()
+    {
+        go_loading_icon.SetActive(false);
+        StopAllCoroutines();
+    }
+    void OnDropDown(int index)
+    {
+        BroadcastMessage("SetPreviousIndex", index);
+        if (index != 0)
+        {
+            if_current.text = dd_mseItem.value.ToString();
+            RePlay();
+        }
+        MouseLook.isLocked = false;
+    }
+
+    void ShowChar(bool b)
+    {
+        if (b)
+        {
+            go_char.SetActive(true);
+        }
+        else
+        {
+            go_char.SetActive(false);
+        }
+    }
+    void ShowBsphere(bool b)
+    {
+        if (b)
+        {
+            go_bSphere.SetActive(true);
+        }
+        else
+        {
+            go_bSphere.SetActive(false);
+        }
+    }
+    void ShowCursor(bool b)
+    {
+        if (b)
+        {
+            foreach (var item in go_cursors)
+            {
+                item.SetActive(true);
+            }
+        }
+        else
+        {
+            foreach (var item in go_cursors)
+            {
+                item.SetActive(false);
+            }
+        }
+    }
+
+    void Next()
+    {
+        int cnt = dd_mseItem.options.Count - 1;
+        if (dd_mseItem.value == cnt)
+        {
+            dd_mseItem.value = 0;
+        }
+        if_current.text = (++dd_mseItem.value).ToString();
+    }
+    void Before()
+    {
+        int cnt = dd_mseItem.options.Count - 1;
+        if (dd_mseItem.value <= 1)
+        {
+            dd_mseItem.value = cnt;
+            if_current.text = cnt.ToString();
+        }
+        else
+            if_current.text = (--dd_mseItem.value).ToString();
+    }
+
+    void RePlay()
+    {
+        if (MouseLook.isLocked)
+            MouseLook.isLocked = false;
+        if (dd_mseItem.value != 0)
+        {
+            using (StreamReader sr = File.OpenText(dd_mseItem.captionText.text + ".mse"))
+            {
+                string line;
+                while ((line = sr.ReadLine()) != null)
+                {
+                    if (line.StartsWith("BoundingSphereRadius"))
+                    {
+                        string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        float boundingSphereRadius = float.Parse(split[1]);
+                        go_bSphere.transform.localScale = Vector3.one * boundingSphereRadius / 100f;
+                    }
+                    else if (line.StartsWith("BoundingSpherePosition"))
+                    {
+                        string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        Vector3 boundingSpherePosition = new Vector3(float.Parse(split[1]), float.Parse(split[3]), float.Parse(split[2]));
+                        go_bSphere.transform.position = boundingSpherePosition;
+                    }
+
+                    if (line.StartsWith("Group Particle"))
+                    {
+                        ParseParticleProperties(sr);
+                    }
+                }
+            }
+        }
+        else
+        {
+            ri_black.enabled = true;
+            StartCoroutine(Wait());
+            anim_warning.enabled = true;
+            anim_warning.Play("warning");
+        }
+    }
+    IEnumerator Wait()
+    {
+        yield return new WaitForSeconds(1.5f);
+        ri_black.enabled = false;
+    }
+
+    void Quit()
+    {
+#if UNITY_EDITOR
+        UnityEditor.EditorApplication.isPlaying = false;
+#else
+    Application.Quit();
+#endif
+    }
+
+    #endregion
+
+    #region for 3D
+
+    void ParseParticleProperties(StreamReader sr)
+    {
+        // Group Particle start
+        float startTime = 0f;
+        Dictionary<float, Vector3> timeEventPosition = new Dictionary<float, Vector3>();
+
+        #region Group EmitterProperty' variables
+        int maxEmissionCount = -1;
+
+        float cycleLength = 0f;
+        bool cycleLoopEnable = false;
+        int loopCount = 1;
+
+        int emitterShape = -1;
+        bool emitterEmitFromEdgeFlag = false;
+        float emittingRadius = 0f;
+        Vector3 emittingSize = Vector3.zero;
+
+        Dictionary<float, float> timeEventEmittingSize = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventEmittingAngularVelocity = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventEmittingDirectionX = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventEmittingDirectionY = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventEmittingDirectionZ = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventEmittingVelocity = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventEmissionCountPerSecond = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventLifeTime = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventScaleX = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventScaleY = new Dictionary<float, float>();
+        #endregion
+
+        #region Group ParticleProperty's variables
+        int billboardType = -1;
+        int rotationType = -1;
+        float rotationSpeed = 0f;
+
+        Dictionary<float, float> timeEventSizeX = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventSizeY = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventColorRed = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventColorGreen = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventColorBlue = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventAlpha = new Dictionary<float, float>();
+        Dictionary<float, float> timeEventRotation = new Dictionary<float, float>();
+        string textureFiles = string.Empty;
+        #endregion
+
+        #region to pick
+        string line;
+
+        while ((line = sr.ReadLine()) != null && !line.StartsWith("}"))
+        {
+            // start picking
+            if (line.Contains("StartTime"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                startTime = float.Parse(split[1]);
+            }
+            else if (line.Contains("MOVING_TYPE_DIRECT"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                timeEventPosition.Add(float.Parse(split[0]), new Vector3(float.Parse(split[2]), float.Parse(split[4]), float.Parse(split[3])));
+            }
+
+            #region for EmitterProperty
+            else if (line.Contains("MaxEmissionCount"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                maxEmissionCount = int.Parse(split[1]);
+            }
+
+            else if (line.Contains("CycleLength"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                cycleLength = float.Parse(split[1]);
+            }
+            else if (line.Contains("CycleLoopEnable"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (int.Parse(split[1]) != 0)
+                    cycleLoopEnable = true;
+            }
+            else if (line.Contains("LoopCount"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                loopCount = int.Parse(split[1]);
+            }
+
+            else if (line.Contains("EmitterShape"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                emitterShape = int.Parse(split[1]);
+            }
+            else if (line.Contains("EmitterEmitFromEdgeFlag"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (int.Parse(split[1]) != 0)
+                    emitterEmitFromEdgeFlag = true;
+            }
+
+            else if (line.Contains("TimeEventEmittingSize"))
+            {
+                string _line = sr.ReadLine();
+            J00001: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventEmittingSize.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+                        timeEventEmittingSize.Add(0f, 0f);
+                    }
+                    goto J00001;
+                }
+            }
+            else if (line.Contains("TimeEventEmittingAngularVelocity"))
+            {
+                string _line = sr.ReadLine();
+            J00002: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventEmittingAngularVelocity.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+                        timeEventEmittingAngularVelocity.Add(0f, 0f);
+                    }
+                    goto J00002;
+                }
+            }
+            else if (line.Contains("TimeEventEmittingDirectionX"))
+            {
+                string _line = sr.ReadLine();
+            J00003: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventEmittingDirectionX.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+                        timeEventEmittingDirectionX.Add(0f, 0f);
+                    }
+                    goto J00003;
+                }
+            }
+            else if (line.Contains("TimeEventEmittingDirectionY"))
+            {
+                string _line = sr.ReadLine();
+            J00004: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventEmittingDirectionY.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+                        timeEventEmittingDirectionY.Add(0f, 0f);
+                    }
+                    goto J00004;
+                }
+            }
+            else if (line.Contains("TimeEventEmittingDirectionZ"))
+            {
+                string _line = sr.ReadLine();
+            J00005: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventEmittingDirectionZ.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+                        timeEventEmittingDirectionZ.Add(0f, 0f);
+                    }
+                    goto J00005;
+                }
+            }
+            else if (line.Contains("TimeEventEmittingVelocity"))
+            {
+                string _line = sr.ReadLine();
+            J00006: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventEmittingVelocity.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+                        timeEventEmittingVelocity.Add(0f, 0f);
+                    }
+                    goto J00006;
+                }
+            }
+            else if (line.Contains("TimeEventEmissionCountPerSecond"))
+            {
+                string _line = sr.ReadLine();
+            J00007: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    timeEventEmissionCountPerSecond.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    goto J00007;
+                }
+            }
+            else if (line.Contains("TimeEventLifeTime"))
+            {
+                string _line = sr.ReadLine();
+            J00008: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventLifeTime.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+
+                    }
+                    goto J00008;
+                }
+            }
+            else if (line.Contains("TimeEventSizeX"))
+            {
+                string _line = sr.ReadLine();
+            J00016: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventSizeX.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+
+                    }
+                    goto J00016;
+                }
+            }
+            else if (line.Contains("TimeEventSizeY"))
+            {
+                string _line = sr.ReadLine();
+            J00017: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventSizeY.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+
+                    }
+                    goto J00017;
+                }
+            }
+            #endregion
+
+            #region for ParticleProperty
+            else if (line.Contains("BillboardType"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                billboardType = int.Parse(split[1]);
+            }
+            else if (line.Contains("RotationType"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                rotationType = int.Parse(split[1]);
+            }
+            else if (line.Contains("RotationSpeed"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                rotationSpeed = float.Parse(split[1]);
+            }
+            else if (line.Contains("EmittingRadius"))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                emittingRadius = float.Parse(split[1]);
+            }
+            else if (line.Contains(" EmittingSize "))
+            {
+                string[] split = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                emittingSize = new Vector3(float.Parse(split[1]), float.Parse(split[3]), float.Parse(split[2]));
+            }
+
+            else if (line.Contains("TimeEventScaleX"))
+            {
+                string _line = sr.ReadLine();
+            J00009: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventScaleX.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch { }
+                    goto J00009;
+                }
+            }
+            else if (line.Contains("TimeEventScaleY"))
+            {
+                string _line = sr.ReadLine();
+            J00010: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    timeEventScaleY.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    goto J00010;
+                }
+            }
+            else if (line.Contains("TimeEventColorRed"))
+            {
+                string _line = sr.ReadLine();
+            J00011: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventColorRed.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch
+                    {
+
+                    }
+                    goto J00011;
+                }
+            }
+            else if (line.Contains("TimeEventColorGreen"))
+            {
+                string _line = sr.ReadLine();
+            J00012: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventColorGreen.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch { }
+                    goto J00012;
+                }
+            }
+            else if (line.Contains("TimeEventColorBlue"))
+            {
+                string _line = sr.ReadLine();
+            J00013: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventColorBlue.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch { }
+                    goto J00013;
+                }
+            }
+            else if (line.Contains("TimeEventAlpha"))
+            {
+                string _line = sr.ReadLine();
+            J00014: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    timeEventAlpha.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    goto J00014;
+                }
+            }
+            else if (line.Contains("TimeEventRotation"))
+            {
+                string _line = sr.ReadLine();
+            J00015: _line = sr.ReadLine();
+
+                if (!_line.Contains("}"))
+                {
+                    string[] split = _line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        timeEventRotation.Add(float.Parse(split[0]), float.Parse(split[1]));
+                    }
+                    catch { }
+                    goto J00015;
+                }
+            }
+            else if (line.Contains("TextureFiles"))
+            {
+                string _line = sr.ReadLine();
+                _line = sr.ReadLine().Replace(".dds", string.Empty).Replace("  ", "").Replace(@"D:\YMIR WORK\pc\sura\effect\", string.Empty).Replace(@"D:\Ymir Work\pc\sura\effect\", string.Empty).
+                    Replace(@"D:\Ymir Work\effect\monster2\", string.Empty).Replace(@"D:\Ymir Work\pc\assassin\effect\", string.Empty).Replace(@"D:\Ymir Work\effect\monster\", string.Empty).
+                    Replace(@"D:\Ymir work\effect\affect\", string.Empty).Replace(@"D:\Ymir Work\pc\shaman\effect\", string.Empty);
+                textureFiles = _line.Remove(0, 1);
+                textureFiles = textureFiles.Remove(textureFiles.Length - 1, 1);
+            }
+            #endregion
+        }
+        switch (billboardType)
+        {
+            case 4: // for BILLBOARD_TYPE_2FACE
+                CreateParticle(
+startTime, timeEventPosition, maxEmissionCount, cycleLength, cycleLoopEnable, loopCount, emitterShape, emitterEmitFromEdgeFlag,
+timeEventEmittingSize, timeEventEmittingAngularVelocity, timeEventEmittingDirectionX, timeEventEmittingDirectionY, timeEventEmittingDirectionZ,
+timeEventEmittingVelocity, timeEventEmissionCountPerSecond, timeEventLifeTime, timeEventSizeX, timeEventSizeY, emittingRadius, emittingSize,
+billboardType, rotationType, rotationSpeed, timeEventScaleX, timeEventScaleY, timeEventColorRed, timeEventColorGreen, timeEventColorBlue,
+timeEventAlpha, timeEventRotation, textureFiles, -30f, 90f);
+                CreateParticle(
+startTime, timeEventPosition, maxEmissionCount, cycleLength, cycleLoopEnable, loopCount, emitterShape, emitterEmitFromEdgeFlag,
+timeEventEmittingSize, timeEventEmittingAngularVelocity, timeEventEmittingDirectionX, timeEventEmittingDirectionY, timeEventEmittingDirectionZ,
+timeEventEmittingVelocity, timeEventEmissionCountPerSecond, timeEventLifeTime, timeEventSizeX, timeEventSizeY, emittingRadius, emittingSize,
+billboardType, rotationType, rotationSpeed, timeEventScaleX, timeEventScaleY, timeEventColorRed, timeEventColorGreen, timeEventColorBlue,
+timeEventAlpha, timeEventRotation, textureFiles, 30f, 90f);
+                break;
+            case 5: // for BILLBOARD_TYPE_3FACE
+                for (int j = 0; j < 3; j++)
+                {
+                    CreateParticle(
+    startTime, timeEventPosition, maxEmissionCount, cycleLength, cycleLoopEnable, loopCount, emitterShape, emitterEmitFromEdgeFlag,
+    timeEventEmittingSize, timeEventEmittingAngularVelocity, timeEventEmittingDirectionX, timeEventEmittingDirectionY, timeEventEmittingDirectionZ,
+    timeEventEmittingVelocity, timeEventEmissionCountPerSecond, timeEventLifeTime, timeEventSizeX, timeEventSizeY, emittingRadius, emittingSize,
+    billboardType, rotationType, rotationSpeed, timeEventScaleX, timeEventScaleY, timeEventColorRed, timeEventColorGreen, timeEventColorBlue,
+    timeEventAlpha, timeEventRotation, textureFiles, 60f * j, 90f);
+                }
+                break;
+            default: // for the other
+                CreateParticle(
+startTime, timeEventPosition, maxEmissionCount, cycleLength, cycleLoopEnable, loopCount, emitterShape, emitterEmitFromEdgeFlag,
+timeEventEmittingSize, timeEventEmittingAngularVelocity, timeEventEmittingDirectionX, timeEventEmittingDirectionY, timeEventEmittingDirectionZ,
+timeEventEmittingVelocity, timeEventEmissionCountPerSecond, timeEventLifeTime, timeEventSizeX, timeEventSizeY, emittingRadius, emittingSize,
+billboardType, rotationType, rotationSpeed, timeEventScaleX, timeEventScaleY, timeEventColorRed, timeEventColorGreen, timeEventColorBlue,
+timeEventAlpha, timeEventRotation, textureFiles, 0f, 0f);
+                break;
+        }
+
+        #endregion
+    }
+    void CreateParticle(
+        float startTime, Dictionary<float, Vector3> timeEventPosition, int maxEmissionCount, float cycleLength, bool cycleLoopEnable, int loopCount, int emitterShape, bool emitterEmitFromEdgeFlag,
+        Dictionary<float, float> timeEventEmittingSize, Dictionary<float, float> timeEventEmittingAngularVelocity, Dictionary<float, float> timeEventEmittingDirectionX, Dictionary<float, float> timeEventEmittingDirectionY, Dictionary<float, float> timeEventEmittingDirectionZ,
+        Dictionary<float, float> timeEventEmittingVelocity, Dictionary<float, float> timeEventEmissionCountPerSecond, Dictionary<float, float> timeEventLifeTime, Dictionary<float, float> timeEventSizeX, Dictionary<float, float> timeEventSizeY, float emittingRadius, Vector3 emittingSize,
+        int billboardType, int rotationType, float rotationSpeed, Dictionary<float, float> timeEventScaleX, Dictionary<float, float> timeEventScaleY, Dictionary<float, float> timeEventColorRed, Dictionary<float, float> timeEventColorGreen, Dictionary<float, float> timeEventColorBlue,
+        Dictionary<float, float> timeEventAlpha, Dictionary<float, float> timeEventRotation, string textureFiles, float startRotation, float angle)
+    {
+        ParticleSystem ps = Instantiate(particlePrefab, Vector3.zero, particlePrefab.transform.rotation);
+        ps.transform.Rotate(angle, 0f, 0f);
+        ps.transform.localRotation *= Quaternion.Euler(0f, startRotation, 0f);
+
+        #region main module
+        var main = ps.main;
+        if (cycleLoopEnable)
+        {
+            if (loopCount != 0)
+                main.duration = cycleLength * loopCount;
+        }
+        else
+            main.duration = cycleLength;
+        main.startDelay = startTime;
+        main.maxParticles = maxEmissionCount;
+        AnimationCurve curve = new AnimationCurve();
+        foreach (var item in timeEventLifeTime)
+            curve.AddKey(item.Key, item.Value);
+        //main.startLifetime = new ParticleSystem.MinMaxCurve(1f, curve);
+        main.startLifetime = new ParticleSystem.MinMaxCurve(timeEventLifeTime.Values.ToArray()[0]);
+        main.startSize3D = true;
+        curve = new AnimationCurve();
+        foreach (var item in timeEventSizeX)
+        {
+            curve.AddKey(item.Key, item.Value);
+        }
+        main.startSizeX = new ParticleSystem.MinMaxCurve(1f, curve);
+        curve = new AnimationCurve();
+        foreach (var item in timeEventSizeY)
+        {
+            curve.AddKey(item.Key, item.Value);
+        }
+        main.startSizeY = new ParticleSystem.MinMaxCurve(1f, curve);
+        #endregion
+
+        #region emission module
+        var emission = ps.emission;
+        emission.enabled = true;
+        curve = new AnimationCurve();
+        foreach (var item in timeEventEmissionCountPerSecond)
+            curve.AddKey(item.Key, item.Value);
+        emission.rateOverTime = new ParticleSystem.MinMaxCurve(1f, curve);
+        #endregion
+
+        #region shape module
+        var shape = ps.shape;
+        shape.enabled = true;
+        switch (emitterShape)
+        {
+            case 0: // EMITTER_SHAPE_POINT
+                shape.shapeType = ParticleSystemShapeType.Sphere;
+                shape.radius = 0.0001f;
+                shape.radiusThickness = 0f;
+                break;
+            case 1: // EMITTER_SHAPE_ELLIPSE
+                shape.shapeType = ParticleSystemShapeType.Circle;
+                if (emitterEmitFromEdgeFlag)
+                {
+                    shape.radiusThickness = 0f;
+                    try
+                    {
+                        shape.radius = (emittingRadius + timeEventEmittingSize.Values.ToArray()[0]);
+                        if (timeEventEmittingSize.Count > 1)
+                        {
+                            int _index = 0;
+                            foreach (var item in timeEventEmittingSize)
+                            {
+                                if (_index != 0)
+                                {
+                                    StartCoroutine(SetEmittingSize(ps.shape, item.Key, item.Value, emittingRadius));
+                                }
+                                _index++;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        shape.radius = emittingRadius;
+                    }
+                }
+                else
+                {
+                    shape.radiusThickness = 1f;
+                    try
+                    {
+                        shape.radius = (UnityEngine.Random.Range(0f, emittingRadius) + timeEventEmittingSize.Values.ToArray()[0]);
+                        if (timeEventEmittingSize.Count > 1)
+                        {
+                            int _index = 0;
+                            foreach (var item in timeEventEmittingSize)
+                            {
+                                if (_index != 0)
+                                {
+                                    StartCoroutine(SetEmittingSize(ps.shape, item.Key, item.Value, emittingRadius));
+                                }
+                                _index++;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        shape.radius = UnityEngine.Random.Range(0f, emittingRadius);
+                    }
+                }
+                break;
+            case 2: // EMITTER_SHAPE_SQUARE
+                shape.shapeType = ParticleSystemShapeType.Box;
+                shape.scale = emittingSize;
+                break;
+            case 3: // EMITTER_SHAPE_SPHERE
+                shape.shapeType = ParticleSystemShapeType.Sphere;
+                if (emitterEmitFromEdgeFlag)
+                {
+                    shape.radiusThickness = 0f;
+                    try
+                    {
+                        shape.radius = (emittingRadius + timeEventEmittingSize.Values.ToArray()[0]);
+                        if (timeEventEmittingSize.Count > 1)
+                        {
+                            int _index = 0;
+                            foreach (var item in timeEventEmittingSize)
+                            {
+                                if (_index != 0)
+                                {
+                                    StartCoroutine(SetEmittingSize(ps.shape, item.Key, item.Value, emittingRadius));
+                                }
+                                _index++;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        shape.radius = emittingRadius;
+                    }
+                }
+                else
+                {
+                    shape.radiusThickness = 1f;
+                    try
+                    {
+                        shape.radius = (UnityEngine.Random.Range(0f, emittingRadius) + timeEventEmittingSize.Values.ToArray()[0]);
+                        if (timeEventEmittingSize.Count > 1)
+                        {
+                            int _index = 0;
+                            foreach (var item in timeEventEmittingSize)
+                            {
+                                if (_index != 0)
+                                {
+                                    StartCoroutine(SetEmittingSize(ps.shape, item.Key, item.Value, emittingRadius));
+                                }
+                                _index++;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        shape.radius = UnityEngine.Random.Range(0f, emittingRadius);
+                    }
+                }
+                break;
+            default: break;
+        }
+        #endregion
+
+        #region velocityOverLifetime module
+        var velocityOverLifetime = ps.velocityOverLifetime;
+        velocityOverLifetime.enabled = true;
+        curve = new AnimationCurve();
+        foreach (var item in timeEventEmittingDirectionX)
+        {
+            curve.AddKey(item.Key, item.Value);
+        }
+        velocityOverLifetime.x = new ParticleSystem.MinMaxCurve(1f, curve);
+        curve = new AnimationCurve();
+        foreach (var item in timeEventEmittingDirectionY)
+        {
+            curve.AddKey(item.Key, item.Value);
+        }
+        velocityOverLifetime.y = new ParticleSystem.MinMaxCurve(-1f, curve);
+        curve = new AnimationCurve();
+        foreach (var item in timeEventEmittingDirectionZ)
+        {
+            curve.AddKey(item.Key, item.Value);
+        }
+        velocityOverLifetime.z = new ParticleSystem.MinMaxCurve(1f, curve);
+        curve = new AnimationCurve();
+        foreach (var item in timeEventEmittingVelocity)
+        {
+            curve.AddKey(item.Key, item.Value);
+        }
+        try
+        {
+            velocityOverLifetime.speedModifierMultiplier = timeEventEmittingVelocity.Values.ToArray()[0];
+        }
+        catch
+        {
+            velocityOverLifetime.speedModifierMultiplier = 1f;
+        }
+
+        curve = new AnimationCurve();
+        foreach (var item in timeEventEmittingAngularVelocity)
+        {
+            curve.AddKey(item.Key, item.Value);
+        }
+        try
+        {
+            velocityOverLifetime.orbitalZ = timeEventEmittingAngularVelocity.Values.ToArray()[0];
+        }
+        catch
+        {
+            velocityOverLifetime.orbitalZ = 0f;
+        }
+        #endregion
+
+        #region colorOverLifetime module
+        var colorOverLifetime = ps.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        Gradient gradient = new Gradient();
+        gradient.mode = GradientMode.Blend;
+        GradientColorKey[] colorKeys = new GradientColorKey[timeEventColorRed.Count];
+        int index = 0;
+        foreach (var pair in timeEventColorRed)
+        {
+            try
+            {
+                colorKeys[index] = new GradientColorKey(new Color(pair.Value, timeEventColorGreen.Values.ToArray()[index], timeEventColorBlue.Values.ToArray()[index]), pair.Key);
+                index++;
+            }
+            catch { }
+        }
+
+        GradientAlphaKey[] alphaKeys = new GradientAlphaKey[timeEventAlpha.Count];
+        index = 0;
+        foreach (var pair in timeEventAlpha)
+        {
+            alphaKeys[index] = new GradientAlphaKey(pair.Value, pair.Key);
+            index++;
+        }
+
+        gradient.SetKeys(colorKeys, alphaKeys);
+        colorOverLifetime.color = new ParticleSystem.MinMaxGradient(gradient);
+        #endregion
+
+        #region sizeOverLifetime module
+        var sizeOverLifetime = ps.sizeOverLifetime;
+        sizeOverLifetime.enabled = true;
+        sizeOverLifetime.separateAxes = true;
+
+        curve = new AnimationCurve();
+        foreach (var pair in timeEventScaleX)
+        {
+            curve.AddKey(pair.Key, pair.Value);
+        }
+        sizeOverLifetime.x = new ParticleSystem.MinMaxCurve(1f, curve);
+
+        curve = new AnimationCurve();
+        foreach (var pair in timeEventScaleY)
+        {
+            curve.AddKey(pair.Key, pair.Value);
+        }
+        sizeOverLifetime.y = new ParticleSystem.MinMaxCurve(1f, curve);
+
+        #endregion
+
+        #region rotationOverLifetime module
+        var rotationOverLifetime = ps.rotationOverLifetime;
+        rotationOverLifetime.enabled = true;
+        curve = new AnimationCurve();
+        foreach (var pair in timeEventRotation)
+        {
+            curve.AddKey(pair.Key, pair.Value);
+        }
+        if (billboardType == 2)
+            rotationOverLifetime.y = new ParticleSystem.MinMaxCurve(Mathf.Deg2Rad, curve);
+        else
+            rotationOverLifetime.z = new ParticleSystem.MinMaxCurve(Mathf.Deg2Rad, curve);
+        #endregion
+
+        #region rotationBySpeed module
+        var rotationBySpeed = ps.rotationBySpeed;
+        rotationBySpeed.enabled = true;
+        var _rotationSpeed = rotationSpeed * Mathf.Deg2Rad;
+        switch (rotationType)
+        {
+            case 0:
+                rotationBySpeed.zMultiplier = 0f; break;
+            case 2:
+                rotationBySpeed.zMultiplier = 1f * _rotationSpeed; break;
+            case 3:
+                rotationBySpeed.zMultiplier = -1f * _rotationSpeed; break;
+            default:
+                break;
+        }
+        #endregion
+
+        #region renderer module
+        var renderer = ps.GetComponent<ParticleSystemRenderer>();
+        switch (billboardType)
+        {
+            case 0: // BILLBOARD_TYPE_NONE
+                renderer.renderMode = ParticleSystemRenderMode.Billboard;
+                renderer.alignment = ParticleSystemRenderSpace.Local; break;
+            case 1: // BILLBOARD_TYPE_ALL
+                renderer.renderMode = ParticleSystemRenderMode.Billboard;
+                renderer.alignment = ParticleSystemRenderSpace.View; break;
+            case 2: // BILLBOARD_TYPE_Y
+                renderer.renderMode = ParticleSystemRenderMode.VerticalBillboard;
+                renderer.alignment = ParticleSystemRenderSpace.Local; break;
+            case 3: // BILLBOARD_TYPE_LIE
+                renderer.renderMode = ParticleSystemRenderMode.HorizontalBillboard;
+                renderer.alignment = ParticleSystemRenderSpace.Local; break;
+            case 4: // BILLBOARD_TYPE_2FACE
+                renderer.renderMode = ParticleSystemRenderMode.Billboard;
+                renderer.alignment = ParticleSystemRenderSpace.Local; break;
+            case 5: // BILLBOARD_TYPE_3FACE
+                renderer.renderMode = ParticleSystemRenderMode.Billboard;
+                renderer.alignment = ParticleSystemRenderSpace.Local; break;
+            default: break;
+        }
+        Texture tex_mat = Resources.Load<Texture>(textureFiles);
+        renderer.material.mainTexture = tex_mat;
+        #endregion
+
+        #region custom animation
+        Animation anim = ps.GetComponent<Animation>();
+        AnimationCurve curve_pos_x = new AnimationCurve(), curve_pos_y = new AnimationCurve(), curve_pos_z = new AnimationCurve();
+
+        AnimationClip clip = new AnimationClip();
+        totalIndex++;
+        clip.name = "anim" + totalIndex;
+        clip.legacy = true;
+
+        foreach (var pair in timeEventPosition)
+        {
+            curve_pos_x.AddKey(pair.Key, pair.Value.x);
+            curve_pos_y.AddKey(pair.Key, pair.Value.y);
+            curve_pos_z.AddKey(pair.Key, pair.Value.z);
+        }
+
+        clip.SetCurve("", typeof(Transform), "localPosition.x", curve_pos_x);
+        clip.SetCurve("", typeof(Transform), "localPosition.y", curve_pos_y);
+        clip.SetCurve("", typeof(Transform), "localPosition.z", curve_pos_z);
+
+        anim.AddClip(clip, clip.name);
+        #endregion
+
+        ps.Play();
+        anim.Play(clip.name);
+
+        Destroy(ps.gameObject, cycleLength + timeEventLifeTime.Values.ToArray()[0] + 1f);
+    }
+    IEnumerator SetEmittingSize(ParticleSystem.ShapeModule shape, float key, float value, float emittingRadius)
+    {
+        yield return new WaitForSeconds(key);
+        shape.radius = (emittingRadius + value);
+    }
+
+    #endregion
+}
